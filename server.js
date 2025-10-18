@@ -1,22 +1,25 @@
 // server.js
 
-require('dotenv').config();
+require('dotenv').config(); // LER VARIÁVEIS DE AMBIENTE PRIMEIRO
+
 const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcrypt');
 const db = require('./db'); // Importa o pool de conexões do MySQL
+const jwt = require('jsonwebtoken');
+const nodemailer = require('nodemailer');
+const crypto = require('crypto');
 
 const app = express();
 const PORT = process.env.SERVER_PORT || 3000;
 const SALT_ROUNDS = 10; // Fator de segurança para Bcrypt
-const jwt = require('jsonwebtoken');
 
 // ------------------------------------
-// MIDDLEWARE
+// MIDDLEWARE (DEVE ESTAR AQUI!)
 // ------------------------------------
 
-// Permite o parseamento de JSON nas requisições (req.body)
-app.use(express.json());
+// 🚨 CORREÇÃO ESSENCIAL: Permite que o Express leia o JSON do corpo da requisição
+app.use(express.json()); 
 
 // Configura o CORS: permite que o frontend Angular (localhost:4200) se conecte
 app.use(cors({
@@ -25,10 +28,67 @@ app.use(cors({
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
+// ------------------------------------
+// CONFIGURAÇÃO DO TRANSPORTE DE EMAIL
+// ------------------------------------
+const transporter = nodemailer.createTransport({
+    host: process.env.EMAIL_SERVICE_HOST,
+    port: process.env.EMAIL_SERVICE_PORT,
+    secure: false, 
+    auth: {
+        user: process.env.EMAIL_SERVICE_USER, 
+        pass: process.env.EMAIL_SERVICE_PASS,
+    },
+});
 
 // ------------------------------------
 // ROTAS DE AUTENTICAÇÃO (AUTH)
 // ------------------------------------
+
+// ROTA: ESQUECI A SENHA (Gera Token e Envia Email)
+app.post('/api/auth/forgot-password', async (req, res) => {
+    // Agora req.body.email EXISTE!
+    const { email } = req.body; 
+
+    try{
+        const [rows] = await db.query('SELECT id FROM usuarios WHERE email = ?', [email]);
+        const user = rows[0];
+
+        // 🚨 CORREÇÃO: Resposta 200/OK, mesmo se o usuário não for encontrado (por segurança)
+        if(!user){
+            return res.status(200).json({ message: "Se o e-mail estiver cadastrado, você receberá um link."}); 
+        }
+
+        const resetToken = crypto.randomBytes(32).toString('hex');
+        const expires = new Date(Date.now() + 3600000);
+
+        await db.query(
+            'UPDATE usuarios SET reset_token = ?, reset_token_expires = ? WHERE id = ?',
+            [resetToken, expires, user.id]
+        );
+
+        // 🚨 CORREÇÃO: Usando template literal correto para a URL
+        const resetUrl = `${process.env.FRONTEND_URL}/redefinir-senha/${resetToken}`;
+
+        const mailOptions = {
+            to: email,
+            from: process.env.EMAIL_SERVICE_USER,
+            subject: 'LearnOn - Redefinição de Senha',
+            html:`
+                <p>Você solicitou a redefinição de senha.</p>
+                <p>Clique neste link para redefinir sua senha: <a href="${resetUrl}">${resetUrl}</a></p>
+                <p>O link expirará em 1 hora.</p>
+            `,
+        };
+        await transporter.sendMail(mailOptions);
+        
+        res.status(200).json({ message: 'Email de redefinição de senha enviado.'});
+    } catch(error){
+        console.error('Erro ao solicitar redefinição de senha:', error);
+        res.status(500).json({ message: 'Erro interno no servidor.'});
+    }
+
+});
 
 // ROTA DE REGISTRO (Cadastro de Usuário)
 app.post('/api/auth/register', async (req, res) => {
@@ -40,25 +100,20 @@ app.post('/api/auth/register', async (req, res) => {
     }
 
     try {
-        // 1. Criptografa a senha antes de qualquer coisa
         const senhaHash = await bcrypt.hash(senha, SALT_ROUNDS);
 
-        // 2. Insere o novo usuário no MySQL
         const query = `
             INSERT INTO usuarios (nome, email, senha_hash, tipo_usuario) 
             VALUES (?, ?, ?, 'aluno')
         `;
-        // tipo_usuario é definido como 'aluno' por padrão
         const [result] = await db.query(query, [nome, email, senhaHash]);
 
-        // 3. Resposta de sucesso
         res.status(201).json({ 
             message: 'Usuário registrado com sucesso!',
             userId: result.insertId 
         });
 
     } catch (error) {
-        // 4. Tratamento de erro (ex: email já existe)
         if (error.code === 'ER_DUP_ENTRY') {
             return res.status(409).json({ message: 'Este email já está cadastrado.' });
         }
@@ -67,6 +122,7 @@ app.post('/api/auth/register', async (req, res) => {
     }
 });
 
+// ROTA DE LOGIN
 app.post('/api/auth/login', async (req, res) => {
     const { email, senha } = req.body;
 
@@ -75,25 +131,20 @@ app.post('/api/auth/login', async (req, res) => {
     }
 
     try {
-        // 1. Buscar o usuário no MySQL
         const query = `SELECT id, nome, senha_hash, tipo_usuario FROM usuarios WHERE email = ?`;
         const [rows] = await db.query(query, [email]);
         const user = rows[0];
 
-        // 2. Verificar se o usuário existe
         if (!user) {
-            // É uma boa prática usar uma mensagem genérica para não revelar se o email existe
             return res.status(401).json({ message: 'Credenciais inválidas.' });
         }
 
-        // 3. Comparar a senha fornecida com o hash salvo (Bcrypt)
         const isMatch = await bcrypt.compare(senha, user.senha_hash);
 
         if (!isMatch) {
             return res.status(401).json({ message: 'Credenciais inválidas.' });
         }
 
-        // 4. Gerar o Token JWT (Autenticação bem-sucedida)
         const token = jwt.sign(
             { 
                 userId: user.id, 
@@ -101,10 +152,9 @@ app.post('/api/auth/login', async (req, res) => {
                 type: user.tipo_usuario
             },
             process.env.JWT_SECRET,
-            { expiresIn: '1h' } // O token expira em 1 hora
+            { expiresIn: '1h' }
         );
 
-        // 5. Resposta de sucesso: Envia o token e informações básicas do usuário
         res.status(200).json({
             message: 'Login bem-sucedido!',
             token: token,
@@ -119,6 +169,46 @@ app.post('/api/auth/login', async (req, res) => {
         console.error('Erro no login:', error);
         res.status(500).json({ message: 'Erro interno no servidor.' });
     }
+});
+
+// ROTA DE RESET-PASSWORD
+app.post('/api/auth/reset-password', async (req, res) => {
+    const { token, novaSenha } = req.body; // Use 'novaSenha' para consistência com o frontend
+
+    if (!token || !novaSenha) {
+        return res.status(400).json({ message: 'Token e nova senha são obrigatórios.' });
+    }
+
+    try{
+        const [rows] = await db.query( // 🚨 CORREÇÃO: O db.query retorna uma array, então [rows] é o correto
+            `SELECT id FROM usuarios 
+             WHERE reset_token = ? 
+             AND reset_token_expires > NOW()`,
+             [token]
+        );
+        const user = rows[0]; // Pegamos o primeiro resultado
+
+        if(!user){
+            return res.status(400).json({ message: "Token inválido ou expirado."});
+        }
+        
+        const novaSenhaHash = await bcrypt.hash(novaSenha, SALT_ROUNDS);
+        
+        await db.query(
+            `UPDATE usuarios 
+             SET senha_hash = ?, 
+                 reset_token = NULL, 
+                 reset_token_expires = NULL 
+             WHERE id = ?`,
+             [novaSenhaHash, user.id]
+        );
+
+        res.status(200).json({ message: "Senha redefinida com sucesso."});
+    } catch(error){
+        console.error('Erro ao redefinir senha:', error);
+        res.status(500).json({ message: 'Erro interno no servidor.'});
+    }
+
 });
 
 // ------------------------------------
