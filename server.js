@@ -45,6 +45,15 @@ const transporter = nodemailer.createTransport({
 // ROTAS DE AUTENTICAÇÃO (AUTH)
 // ------------------------------------
 
+// server.js (Adicionar esta rota TEMPORÁRIA)
+app.get('/api/auth/test', (req, res) => {
+    res.status(200).json({ message: 'Rotas de Auth estão funcionando!' });
+});
+// ...
+// ROTA: ESQUECI A SENHA (Gera Token e Envia Email)
+app.post('/api/auth/forgot-password', async (req, res) => { /* ... */ });
+// ...
+
 // ROTA: ESQUECI A SENHA (Gera Token e Envia Email)
 app.post('/api/auth/forgot-password', async (req, res) => {
     // Agora req.body.email EXISTE!
