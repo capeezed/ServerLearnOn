@@ -39,14 +39,19 @@ async function sendEmail(to, subject, htmlContent) {
             },
             {
                 headers: {
-                    'api-key': process.env.EMAIL_SERVICE_PASS,
+                    'api-key': process.env.EMAIL_SERVICE_PASS, // 🔑 Certifique-se de remover aspas no .env
                     'Content-Type': 'application/json'
-                }
+                },
+                timeout: 10000 // ⏱ Timeout de 10s
             }
         );
         console.log(`✅ E-mail enviado para ${to}`);
         return response.data;
     } catch (err) {
+        if (err.response?.status === 401) {
+            console.error('❌ Erro 401: API Key inválida ou mal configurada');
+            throw new Error('API Key inválida');
+        }
         console.error(`❌ Erro ao enviar e-mail para ${to}:`, err.response?.data || err.message);
         throw err;
     }
@@ -94,7 +99,7 @@ app.post('/api/auth/forgot-password', async (req, res) => {
         res.status(200).json({ message: 'Email de redefinição de senha enviado.' });
 
     } catch (error) {
-        console.error('Erro ao solicitar redefinição de senha:', error);
+        console.error('Erro ao solicitar redefinição de senha:', error.message);
         res.status(500).json({ message: 'Erro interno no servidor.' });
     }
 });
@@ -118,7 +123,7 @@ app.post('/api/auth/register', async (req, res) => {
         if (error.code === 'ER_DUP_ENTRY') {
             return res.status(409).json({ message: 'Este email já está cadastrado.' });
         }
-        console.error('Erro no registro:', error);
+        console.error('Erro no registro:', error.message);
         res.status(500).json({ message: 'Erro interno no servidor.' });
     }
 });
@@ -132,7 +137,10 @@ app.post('/api/auth/login', async (req, res) => {
     }
 
     try {
-        const [rows] = await db.query(`SELECT id, nome, senha_hash, tipo_usuario FROM usuarios WHERE email = ?`, [email]);
+        const [rows] = await db.query(
+            `SELECT id, nome, senha_hash, tipo_usuario FROM usuarios WHERE email = ?`,
+            [email]
+        );
         const user = rows[0];
 
         if (!user) return res.status(401).json({ message: 'Credenciais inválidas.' });
@@ -153,7 +161,7 @@ app.post('/api/auth/login', async (req, res) => {
         });
 
     } catch (error) {
-        console.error('Erro no login:', error);
+        console.error('Erro no login:', error.message);
         res.status(500).json({ message: 'Erro interno no servidor.' });
     }
 });
@@ -183,7 +191,7 @@ app.post('/api/auth/reset-password', async (req, res) => {
         res.status(200).json({ message: 'Senha redefinida com sucesso.' });
 
     } catch (error) {
-        console.error('Erro ao redefinir senha:', error);
+        console.error('Erro ao redefinir senha:', error.message);
         res.status(500).json({ message: 'Erro interno no servidor.' });
     }
 });
