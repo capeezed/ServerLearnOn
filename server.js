@@ -14,7 +14,7 @@ const PORT = process.env.SERVER_PORT || 3000;
 const SALT_ROUNDS = 10;
 
 // ------------------------------------
-// 🧩 MIDDLEWARES (Ordem é importante!)
+// 🧩 MIDDLEWARES
 // ------------------------------------
 app.use(cors({
     origin: ['https://learnonstartup.netlify.app', 'http://localhost:4200'],
@@ -22,28 +22,31 @@ app.use(cors({
     allowedHeaders: ['Content-Type', 'Authorization'],
     credentials: true
 }));
-
 app.use(express.json());
 
 // ------------------------------------
-// ✉️ CONFIGURAÇÃO DO EMAIL (Nodemailer)
+// ✉️ CONFIGURAÇÃO DO EMAIL (Brevo SMTP)
 // ------------------------------------
 const transporter = nodemailer.createTransport({
-    host: process.env.EMAIL_SERVICE_HOST,
-    port: process.env.EMAIL_SERVICE_PORT,
-    secure: false,
+    host: process.env.EMAIL_SERVICE_HOST || "smtp-relay.brevo.com",
+    port: Number(process.env.EMAIL_SERVICE_PORT) || 587,
+    secure: false, // STARTTLS
     auth: {
         user: process.env.EMAIL_SERVICE_USER,
         pass: process.env.EMAIL_SERVICE_PASS,
+    },
+    tls: {
+        rejectUnauthorized: false,
     },
 });
 
 async function verifyTransporter() {
     try {
         await transporter.verify();
-        console.log('✅ SMTP pronto para envio de e-mails');
+        console.log('✅ SMTP (Brevo) pronto para envio de e-mails');
     } catch (error) {
-        console.error('❌ Erro ao verificar transporte SMTP:', error);
+        console.error('❌ Erro ao verificar transporte SMTP:', error.message);
+        console.error(error);
     }
 }
 verifyTransporter();
@@ -52,7 +55,7 @@ verifyTransporter();
 // 🔑 ROTAS DE AUTENTICAÇÃO
 // ------------------------------------
 
-// Teste simples (Render e Netlify)
+// Teste simples
 app.get('/api/auth/test', (req, res) => {
     res.status(200).json({ message: 'Rotas de Auth funcionando corretamente ✅' });
 });
@@ -66,12 +69,11 @@ app.post('/api/auth/forgot-password', async (req, res) => {
         const user = rows[0];
 
         if (!user) {
-            // Não revelar se o email existe
             return res.status(200).json({ message: 'Se o e-mail estiver cadastrado, você receberá um link.' });
         }
 
         const resetToken = crypto.randomBytes(32).toString('hex');
-        const expires = new Date(Date.now() + 3600000);
+        const expires = new Date(Date.now() + 3600000); // 1 hora
 
         await db.query(
             'UPDATE usuarios SET reset_token = ?, reset_token_expires = ? WHERE id = ?',
@@ -136,14 +138,10 @@ app.post('/api/auth/login', async (req, res) => {
         const [rows] = await db.query(`SELECT id, nome, senha_hash, tipo_usuario FROM usuarios WHERE email = ?`, [email]);
         const user = rows[0];
 
-        if (!user) {
-            return res.status(401).json({ message: 'Credenciais inválidas.' });
-        }
+        if (!user) return res.status(401).json({ message: 'Credenciais inválidas.' });
 
         const isMatch = await bcrypt.compare(senha, user.senha_hash);
-        if (!isMatch) {
-            return res.status(401).json({ message: 'Credenciais inválidas.' });
-        }
+        if (!isMatch) return res.status(401).json({ message: 'Credenciais inválidas.' });
 
         const token = jwt.sign(
             { userId: user.id, email: user.email, type: user.tipo_usuario },
@@ -167,9 +165,7 @@ app.post('/api/auth/login', async (req, res) => {
 app.post('/api/auth/reset-password', async (req, res) => {
     const { token, novaSenha } = req.body;
 
-    if (!token || !novaSenha) {
-        return res.status(400).json({ message: 'Token e nova senha são obrigatórios.' });
-    }
+    if (!token || !novaSenha) return res.status(400).json({ message: 'Token e nova senha são obrigatórios.' });
 
     try {
         const [rows] = await db.query(
@@ -178,9 +174,7 @@ app.post('/api/auth/reset-password', async (req, res) => {
         );
 
         const user = rows[0];
-        if (!user) {
-            return res.status(400).json({ message: 'Token inválido ou expirado.' });
-        }
+        if (!user) return res.status(400).json({ message: 'Token inválido ou expirado.' });
 
         const novaSenhaHash = await bcrypt.hash(novaSenha, SALT_ROUNDS);
 
