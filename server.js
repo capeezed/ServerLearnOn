@@ -6,8 +6,8 @@ const cors = require('cors');
 const bcrypt = require('bcrypt');
 const db = require('./db');
 const jwt = require('jsonwebtoken');
-const nodemailer = require('nodemailer');
 const crypto = require('crypto');
+const axios = require('axios');
 
 const app = express();
 const PORT = process.env.SERVER_PORT || 3000;
@@ -25,31 +25,32 @@ app.use(cors({
 app.use(express.json());
 
 // ------------------------------------
-// ✉️ CONFIGURAÇÃO DO EMAIL (Brevo SMTP)
+// ✉️ FUNÇÃO DE ENVIO DE EMAIL (Brevo API)
 // ------------------------------------
-const transporter = nodemailer.createTransport({
-    host: process.env.EMAIL_SERVICE_HOST || "smtp-relay.brevo.com",
-    port: Number(process.env.EMAIL_SERVICE_PORT) || 587,
-    secure: false, // STARTTLS
-    auth: {
-        user: process.env.EMAIL_SERVICE_USER,
-        pass: process.env.EMAIL_SERVICE_PASS,
-    },
-    tls: {
-        rejectUnauthorized: false,
-    },
-});
-
-async function verifyTransporter() {
+async function sendEmail(to, subject, htmlContent) {
     try {
-        await transporter.verify();
-        console.log('✅ SMTP (Brevo) pronto para envio de e-mails');
-    } catch (error) {
-        console.error('❌ Erro ao verificar transporte SMTP:', error.message);
-        console.error(error);
+        const response = await axios.post(
+            'https://api.brevo.com/v3/smtp/email',
+            {
+                sender: { email: process.env.EMAIL_SERVICE_USER },
+                to: [{ email: to }],
+                subject: subject,
+                htmlContent: htmlContent
+            },
+            {
+                headers: {
+                    'api-key': process.env.EMAIL_SERVICE_PASS,
+                    'Content-Type': 'application/json'
+                }
+            }
+        );
+        console.log(`✅ E-mail enviado para ${to}`);
+        return response.data;
+    } catch (err) {
+        console.error(`❌ Erro ao enviar e-mail para ${to}:`, err.response?.data || err.message);
+        throw err;
     }
 }
-verifyTransporter();
 
 // ------------------------------------
 // 🔑 ROTAS DE AUTENTICAÇÃO
@@ -82,18 +83,14 @@ app.post('/api/auth/forgot-password', async (req, res) => {
 
         const resetUrl = `${process.env.FRONTEND_URL}/redefinir-senha/${resetToken}`;
 
-        const mailOptions = {
-            to: email,
-            from: process.env.EMAIL_SERVICE_USER,
-            subject: 'LearnOn - Redefinição de Senha',
-            html: `
-                <p>Você solicitou a redefinição de senha.</p>
-                <p>Clique neste link para redefinir sua senha: <a href="${resetUrl}">${resetUrl}</a></p>
-                <p>O link expirará em 1 hora.</p>
-            `,
-        };
+        const htmlContent = `
+            <p>Você solicitou a redefinição de senha.</p>
+            <p>Clique neste link para redefinir sua senha: <a href="${resetUrl}">${resetUrl}</a></p>
+            <p>O link expirará em 1 hora.</p>
+        `;
 
-        await transporter.sendMail(mailOptions);
+        await sendEmail(email, 'LearnOn - Redefinição de Senha', htmlContent);
+
         res.status(200).json({ message: 'Email de redefinição de senha enviado.' });
 
     } catch (error) {
