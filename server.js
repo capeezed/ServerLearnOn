@@ -7,8 +7,8 @@ const bcrypt = require('bcrypt');
 const db = require('./db');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
-const nodemailer = require('nodemailer'); // 📦 NOVO: Importa Nodemailer (para Mailtrap)
-// const axios = require('axios'); // ❌ REMOVIDO: Não precisamos mais do Axios para Brevo
+// const nodemailer = require('nodemailer'); // ❌ REMOVIDO: Não usa mais Nodemailer/Mailtrap
+const axios = require('axios'); // 📦 NOVO: Adiciona Axios para a API Brevo
 
 const app = express();
 const PORT = process.env.SERVER_PORT || 3000;
@@ -42,40 +42,37 @@ app.use(cors({
 app.use(express.json());
 
 // ------------------------------------
-// ⚙️ CONFIGURAÇÃO DO TRANSPORTE DE EMAIL (Mailtrap/Nodemailer)
+// ✉️ FUNÇÃO DE ENVIO DE EMAIL (Brevo API)
 // ------------------------------------
-
-// 🔑 IMPORTANTE: As variáveis EMAIL_SERVICE_HOST, PORT, USER e PASS devem 
-// estar configuradas corretamente no Render com os dados do Mailtrap.
-const transporter = nodemailer.createTransport({
-    host: process.env.EMAIL_SERVICE_HOST,
-    port: process.env.EMAIL_SERVICE_PORT, // Ex: 2525
-    secure: false, // 🚨 ESSENCIAL para a porta 2525 do Mailtrap
-    auth: {
-        user: process.env.EMAIL_SERVICE_USER, 
-        pass: process.env.EMAIL_SERVICE_PASS,
-    },
-});
-
-
-// ------------------------------------
-// ✉️ FUNÇÃO DE ENVIO DE EMAIL (Nodemailer/Mailtrap)
-// ------------------------------------
+// 🚨 AQUI ESTÁ A MUDANÇA: Usando AXIOS para a API HTTP da Brevo
 async function sendEmail(to, subject, htmlContent) {
     try {
-        const mailOptions = {
-            from: process.env.EMAIL_SERVICE_USER, // Seu remetente do Mailtrap
-            to: to,
-            subject: subject,
-            html: htmlContent
-        };
-
-        const response = await transporter.sendMail(mailOptions);
-        console.log(`✅ E-mail enviado para ${to}. ID: ${response.messageId}`);
-        return response;
+        const response = await axios.post(
+            'https://api.brevo.com/v3/smtp/email',
+            {
+                // EMAIL_SERVICE_USER deve ser um remetente validado na Brevo
+                sender: { email: process.env.EMAIL_SERVICE_USER }, 
+                to: [{ email: to }],
+                subject: subject,
+                htmlContent: htmlContent
+            },
+            {
+                headers: {
+                    // EMAIL_SERVICE_PASS DEVE ser a API Key da Brevo
+                    'api-key': process.env.EMAIL_SERVICE_PASS, 
+                    'Content-Type': 'application/json'
+                },
+                timeout: 10000 // ⏱ Timeout de 10s
+            }
+        );
+        console.log(`✅ E-mail enviado para ${to} via Brevo.`);
+        return response.data;
     } catch (err) {
-        // Agora, o erro reportará a falha de conexão ou autenticação SMTP do Mailtrap
-        console.error(`❌ Erro ao enviar e-mail para ${to}:`, err.message);
+        if (err.response?.status === 401) {
+            console.error('❌ Erro 401: API Key Brevo inválida ou mal configurada');
+            throw new Error('API Key inválida');
+        }
+        console.error(`❌ Erro FATAL ao enviar e-mail para ${to}:`, err.response?.data || err.message);
         throw err;
     }
 }
