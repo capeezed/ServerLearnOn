@@ -7,7 +7,8 @@ const bcrypt = require('bcrypt');
 const db = require('./db');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
-const axios = require('axios');
+const nodemailer = require('nodemailer'); // 📦 NOVO: Importa Nodemailer (para Mailtrap)
+// const axios = require('axios'); // ❌ REMOVIDO: Não precisamos mais do Axios para Brevo
 
 const app = express();
 const PORT = process.env.SERVER_PORT || 3000;
@@ -16,8 +17,24 @@ const SALT_ROUNDS = 10;
 // ------------------------------------
 // 🧩 MIDDLEWARES
 // ------------------------------------
+
+const allowedOrigins = [
+    'https://learnonstartup.netlify.app',
+    'http://localhost:4200',
+    'https://serverlearnon.onrender.com'
+];
+
 app.use(cors({
-    origin: ['https://learnonstartup.netlify.app', 'http://localhost:4200'],
+    origin: (origin, callback) => {
+        if (!origin) return callback(null, true);
+        
+        if (allowedOrigins.indexOf(origin) !== -1) {
+            callback(null, true);
+        } else {
+            console.warn(`🌐 CORS Blocked: Origin ${origin} not allowed.`);
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
     allowedHeaders: ['Content-Type', 'Authorization'],
     credentials: true
@@ -25,37 +42,44 @@ app.use(cors({
 app.use(express.json());
 
 // ------------------------------------
-// ✉️ FUNÇÃO DE ENVIO DE EMAIL (Brevo API)
+// ⚙️ CONFIGURAÇÃO DO TRANSPORTE DE EMAIL (Mailtrap/Nodemailer)
+// ------------------------------------
+
+// 🔑 IMPORTANTE: As variáveis EMAIL_SERVICE_HOST, PORT, USER e PASS devem 
+// estar configuradas corretamente no Render com os dados do Mailtrap.
+const transporter = nodemailer.createTransport({
+    host: process.env.EMAIL_SERVICE_HOST,
+    port: process.env.EMAIL_SERVICE_PORT, // Ex: 2525
+    secure: false, // 🚨 ESSENCIAL para a porta 2525 do Mailtrap
+    auth: {
+        user: process.env.EMAIL_SERVICE_USER, 
+        pass: process.env.EMAIL_SERVICE_PASS,
+    },
+});
+
+
+// ------------------------------------
+// ✉️ FUNÇÃO DE ENVIO DE EMAIL (Nodemailer/Mailtrap)
 // ------------------------------------
 async function sendEmail(to, subject, htmlContent) {
     try {
-        const response = await axios.post(
-            'https://api.brevo.com/v3/smtp/email',
-            {
-                sender: { email: process.env.EMAIL_SERVICE_USER },
-                to: [{ email: to }],
-                subject: subject,
-                htmlContent: htmlContent
-            },
-            {
-                headers: {
-                    'api-key': process.env.EMAIL_SERVICE_PASS, // 🔑 Certifique-se de remover aspas no .env
-                    'Content-Type': 'application/json'
-                },
-                timeout: 10000 // ⏱ Timeout de 10s
-            }
-        );
-        console.log(`✅ E-mail enviado para ${to}`);
-        return response.data;
+        const mailOptions = {
+            from: process.env.EMAIL_SERVICE_USER, // Seu remetente do Mailtrap
+            to: to,
+            subject: subject,
+            html: htmlContent
+        };
+
+        const response = await transporter.sendMail(mailOptions);
+        console.log(`✅ E-mail enviado para ${to}. ID: ${response.messageId}`);
+        return response;
     } catch (err) {
-        if (err.response?.status === 401) {
-            console.error('❌ Erro 401: API Key inválida ou mal configurada');
-            throw new Error('API Key inválida');
-        }
-        console.error(`❌ Erro ao enviar e-mail para ${to}:`, err.response?.data || err.message);
+        // Agora, o erro reportará a falha de conexão ou autenticação SMTP do Mailtrap
+        console.error(`❌ Erro ao enviar e-mail para ${to}:`, err.message);
         throw err;
     }
 }
+
 
 // ------------------------------------
 // 🔑 ROTAS DE AUTENTICAÇÃO
@@ -100,17 +124,14 @@ app.post('/api/auth/forgot-password', async (req, res) => {
 
     } catch (error) {
         console.error('Erro ao solicitar redefinição de senha:', error.message);
-        res.status(500).json({ message: 'Erro interno no servidor.' });
+        res.status(500).json({ message: 'Erro ao processar a solicitação. Tente novamente.' }); 
     }
 });
 
 // Registro
 app.post('/api/auth/register', async (req, res) => {
     const { nome, email, senha } = req.body;
-
-    if (!nome || !email || !senha) {
-        return res.status(400).json({ message: 'Todos os campos são obrigatórios.' });
-    }
+    if (!nome || !email || !senha) return res.status(400).json({ message: 'Todos os campos são obrigatórios.' });
 
     try {
         const senhaHash = await bcrypt.hash(senha, SALT_ROUNDS);
@@ -118,11 +139,8 @@ app.post('/api/auth/register', async (req, res) => {
         const [result] = await db.query(query, [nome, email, senhaHash]);
 
         res.status(201).json({ message: 'Usuário registrado com sucesso!', userId: result.insertId });
-
     } catch (error) {
-        if (error.code === 'ER_DUP_ENTRY') {
-            return res.status(409).json({ message: 'Este email já está cadastrado.' });
-        }
+        if (error.code === 'ER_DUP_ENTRY') return res.status(409).json({ message: 'Este email já está cadastrado.' });
         console.error('Erro no registro:', error.message);
         res.status(500).json({ message: 'Erro interno no servidor.' });
     }
@@ -131,16 +149,10 @@ app.post('/api/auth/register', async (req, res) => {
 // Login
 app.post('/api/auth/login', async (req, res) => {
     const { email, senha } = req.body;
-
-    if (!email || !senha) {
-        return res.status(400).json({ message: 'Email e senha são obrigatórios.' });
-    }
+    if (!email || !senha) return res.status(400).json({ message: 'Email e senha são obrigatórios.' });
 
     try {
-        const [rows] = await db.query(
-            `SELECT id, nome, senha_hash, tipo_usuario FROM usuarios WHERE email = ?`,
-            [email]
-        );
+        const [rows] = await db.query(`SELECT id, nome, senha_hash, tipo_usuario FROM usuarios WHERE email = ?`, [email]);
         const user = rows[0];
 
         if (!user) return res.status(401).json({ message: 'Credenciais inválidas.' });
@@ -169,7 +181,6 @@ app.post('/api/auth/login', async (req, res) => {
 // Resetar senha
 app.post('/api/auth/reset-password', async (req, res) => {
     const { token, novaSenha } = req.body;
-
     if (!token || !novaSenha) return res.status(400).json({ message: 'Token e nova senha são obrigatórios.' });
 
     try {
@@ -189,7 +200,6 @@ app.post('/api/auth/reset-password', async (req, res) => {
         );
 
         res.status(200).json({ message: 'Senha redefinida com sucesso.' });
-
     } catch (error) {
         console.error('Erro ao redefinir senha:', error.message);
         res.status(500).json({ message: 'Erro interno no servidor.' });
