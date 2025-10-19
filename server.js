@@ -31,6 +31,19 @@ app.use(cors({
 // ------------------------------------
 // CONFIGURAÇÃO DO TRANSPORTE DE EMAIL
 // ------------------------------------
+
+// 🚨 NOVO: Crie uma função para testar a conexão SMTP
+async function verifyTransporter() {
+    try {
+        await transporter.verify();
+        console.log("SMTP: Nodemailer pronto para enviar e-mails!");
+    } catch (error) {
+        console.error("SMTP ERRO CRÍTICO: Falha de autenticação ou conexão:", error);
+        // Exibir este erro é CRUCIAL para debug
+        // Se este erro aparecer no log do Render, é sua Senha/Usuário do Gmail.
+    }
+}
+
 const transporter = nodemailer.createTransport({
     host: process.env.EMAIL_SERVICE_HOST,
     port: process.env.EMAIL_SERVICE_PORT,
