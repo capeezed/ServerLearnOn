@@ -23,7 +23,7 @@ app.use(express.json());
 
 // Configura o CORS: permite que o frontend Angular (localhost:4200) se conecte
 app.use(cors({
-    origin: 'https://learnonstartup.netlify.app',
+    origin: '*',
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
