@@ -208,5 +208,5 @@ app.post('/api/auth/reset-password', async (req, res) => {
 // ------------------------------------
 app.listen(PORT, () => {
     console.log(`✅ Servidor rodando na porta ${PORT}`);
-    console.log(`🌐 CORS habilitado para: https://learnonstartup.netlify.app`);
+    console.log(`🌐 CORS habilitado para: https://learnon.vercel.app`);
 });
