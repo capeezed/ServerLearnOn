@@ -1,4 +1,4 @@
-// server.js
+
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -9,16 +9,15 @@ const crypto = require('crypto');
 
 const app = express();
 
-// CORS – permita o domínio do seu front (ajuste se necessário)
+// CORS 
 app.use(
   cors({
-    origin: '*', // em produção, troque por URL da Netlify
+    origin: '*', 
   }),
 );
 
 app.use(express.json());
 
-// Pool de conexão com MySQL
 // Pool de conexão com MySQL
 const pool = mysql.createPool({
     host: process.env.DB_HOST,
@@ -35,10 +34,10 @@ const pool = mysql.createPool({
   async function testDbConnection() {
     try {
       const connection = await pool.getConnection();
-      console.log('✅ Conectado ao MySQL com sucesso!');
+      console.log('Conectado ao MySQL com sucesso!');
       connection.release();
     } catch (err) {
-      console.error('❌ Erro ao conectar ao MySQL:', err.message);
+      console.error(' Erro ao conectar ao MySQL:', err.message);
       process.exit(1);
     }
   }
@@ -58,11 +57,9 @@ async function findUserByEmail(email) {
   return rows[0] || null;
 }
 
-// ======================
-// Rotas de Autenticação
-// ======================
 
-// Registro genérico (ex: aluno)
+
+// Registro
 app.post('/api/auth/register', async (req, res) => {
   try {
     const { nome, email, senha, tipo } = req.body;
@@ -107,7 +104,7 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
-// Registro de professor – deixa como "pendente" para aprovação
+// Registro de professor 
 app.post('/api/auth/register-professor', async (req, res) => {
   try {
     const { nome, email, senha } = req.body;
@@ -171,8 +168,6 @@ app.post('/api/auth/login', async (req, res) => {
         .status(401)
         .json({ message: 'Credenciais inválidas.' });
     }
-
-    // Fluxo de conta pendente (usado no front para mostrar mensagem 403)
     if (user.status === 'pendente') {
       return res
         .status(403)
@@ -180,8 +175,6 @@ app.post('/api/auth/login', async (req, res) => {
     }
 
     const token = generateJwt(user);
-
-    // O front espera: { token, user: { nome, tipo, ... } }
     return res.json({
       token,
       user: {
@@ -196,11 +189,7 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-// ======================
-// Esqueci / Reset Senha
-// ======================
 
-// Esqueci a senha – gera token de reset (aqui só loga no console)
 app.post('/api/auth/forgot-password', async (req, res) => {
   try {
     const { email } = req.body;
@@ -213,7 +202,6 @@ app.post('/api/auth/forgot-password', async (req, res) => {
 
     const user = await findUserByEmail(email);
     if (!user) {
-      // Não revela se o email existe ou não (como o front já sugere)
       return res.json({
         message:
           'Se o e-mail estiver cadastrado, você receberá um link de redefinição.',
@@ -229,8 +217,6 @@ app.post('/api/auth/forgot-password', async (req, res) => {
       [user.id, token, expiresAt],
     );
 
-    // Aqui você enviaria um e-mail com o link tipo:
-    // https://seu-front/reset-password/{token}
     console.log(
       `Token de reset para ${email}: ${token} (use na rota de reset do front)`,
     );
@@ -344,10 +330,6 @@ app.get('/api/pedidos/pendentes', async (req, res) => {
     return res.status(500).json({ message: 'Erro no servidor.' });
   }
 });
-
-// ==========================
-// Inicialização do servidor
-// ==========================
 
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
