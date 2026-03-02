@@ -1,296 +1,355 @@
 // server.js
-require('dotenv').config(); // 🔹 Lê variáveis de ambiente primeiro
-
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const mysql = require('mysql2/promise');
 const bcrypt = require('bcrypt');
-const db = require('./db');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
-const axios = require('axios'); // 📦 Usando a API da Brevo
 
 const app = express();
-const PORT = process.env.SERVER_PORT || 3000;
-const SALT_ROUNDS = 10;
 
-// ------------------------------------
-// 🧩 MIDDLEWARES
-// ------------------------------------
-const allowedOrigins = [
-    'https://learnon.vercel.app',
-    'http://localhost:4200',
-    'https://learnon-5z54a58iw-capeezeds-projects.vercel.app',
-    '*'
-];
+// CORS – permita o domínio do seu front (ajuste se necessário)
+app.use(
+  cors({
+    origin: '*', // em produção, troque por URL da Netlify
+  }),
+);
 
-app.use(cors({
-    origin: (origin, callback) => {
-        if (!origin) return callback(null, true);
-        if (allowedOrigins.indexOf(origin) !== -1) {
-            callback(null, true);
-        } else {
-            console.warn(`🌐 CORS Blocked: Origin ${origin} not allowed.`);
-            callback(new Error('Not allowed by CORS'));
-        }
-    },
-    methods: ['GET', 'POST', 'PUT', 'DELETE'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
-    credentials: true
-}));
 app.use(express.json());
 
-// ------------------------------------
-// ✉️ FUNÇÃO DE ENVIO DE EMAIL (Brevo API)
-// ------------------------------------
-async function sendEmail(to, subject, htmlContent) {
+// Pool de conexão com MySQL
+// Pool de conexão com MySQL
+const pool = mysql.createPool({
+    host: process.env.DB_HOST,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    database: process.env.DB_DATABASE,
+    port: process.env.DB_PORT,
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0,
+  });
+  
+  // Teste de conexão ao iniciar
+  async function testDbConnection() {
     try {
-        const response = await axios.post(
-            'https://api.brevo.com/v3/smtp/email',
-            {
-                sender: { email: process.env.EMAIL_SERVICE_USER },
-                to: [{ email: to }],
-                subject: subject,
-                htmlContent: htmlContent
-            },
-            {
-                headers: {
-                    'api-key': process.env.EMAIL_SERVICE_PASS,
-                    'Content-Type': 'application/json'
-                },
-                timeout: 10000
-            }
-        );
-        console.log(`✅ E-mail enviado para ${to} via Brevo.`);
-        return response.data;
+      const connection = await pool.getConnection();
+      console.log('✅ Conectado ao MySQL com sucesso!');
+      connection.release();
     } catch (err) {
-        if (err.response?.status === 401) {
-            console.error('❌ Erro 401: API Key Brevo inválida ou mal configurada');
-            throw new Error('API Key inválida');
-        }
-        console.error(`❌ Erro ao enviar e-mail para ${to}:`, err.response?.data || err.message);
-        throw err;
+      console.error('❌ Erro ao conectar ao MySQL:', err.message);
+      process.exit(1);
     }
+  }
+  
+  testDbConnection();
+
+// Helpers
+function generateJwt(user) {
+  const payload = { id: user.id, nome: user.nome, tipo: user.tipo };
+  return jwt.sign(payload, process.env.JWT_SECRET || 'changeme', {
+    expiresIn: '7d',
+  });
 }
 
-// ------------------------------------
-// 🔑 ROTAS DE AUTENTICAÇÃO
-// ------------------------------------
+async function findUserByEmail(email) {
+  const [rows] = await pool.query('SELECT * FROM users WHERE email = ?', [email]);
+  return rows[0] || null;
+}
 
-// Teste simples
-app.get('/api/auth/test', (req, res) => {
-    res.status(200).json({ message: 'Rotas de Auth funcionando corretamente ✅' });
-});
+// ======================
+// Rotas de Autenticação
+// ======================
 
-// ------------------------------------
-// 🔐 Registro de Aluno
-// ------------------------------------
+// Registro genérico (ex: aluno)
 app.post('/api/auth/register', async (req, res) => {
-    const { nome, email, senha } = req.body;
-    if (!nome || !email || !senha)
-        return res.status(400).json({ message: 'Todos os campos são obrigatórios.' });
+  try {
+    const { nome, email, senha, tipo } = req.body;
 
-    try {
-        const senhaHash = await bcrypt.hash(senha, SALT_ROUNDS);
-        const query = `
-            INSERT INTO usuarios (nome, email, senha_hash, tipo_usuario)
-            VALUES (?, ?, ?, 'aluno')
-        `;
-        const [result] = await db.query(query, [nome, email, senhaHash]);
-        res.status(201).json({ message: 'Usuário registrado com sucesso!', userId: result.insertId });
-    } catch (error) {
-        if (error.code === 'ER_DUP_ENTRY')
-            return res.status(409).json({ message: 'Este email já está cadastrado.' });
-        console.error('Erro no registro:', error.message);
-        res.status(500).json({ message: 'Erro interno no servidor.' });
+    if (!nome || !email || !senha) {
+      return res
+        .status(400)
+        .json({ message: 'Nome, email e senha são obrigatórios.' });
     }
+
+    const existing = await findUserByEmail(email);
+    if (existing) {
+      return res.status(409).json({ message: 'Email já cadastrado.' });
+    }
+
+    const hashed = await bcrypt.hash(senha, 10);
+    const userTipo = tipo || 'aluno';
+    const status = 'ativo';
+
+    const [result] = await pool.query(
+      'INSERT INTO users (nome, email, senha_hash, tipo_usuario, status) VALUES (?, ?, ?, ?, ?)',
+      [nome, email, hashed, userTipo, status],
+    );
+
+    const newUser = {
+      id: result.insertId,
+      nome,
+      email,
+      tipo: userTipo,
+      status,
+    };
+
+    const token = generateJwt(newUser);
+
+    return res.status(201).json({
+      token,
+      user: { id: newUser.id, nome: newUser.nome, tipo: newUser.tipo },
+    });
+  } catch (err) {
+    console.error('Erro em /api/auth/register:', err);
+    return res.status(500).json({ message: 'Erro no servidor.' });
+  }
 });
 
-// ------------------------------------
-// 👨‍🏫 Registro de Professor
-// ------------------------------------
+// Registro de professor – deixa como "pendente" para aprovação
 app.post('/api/auth/register-professor', async (req, res) => {
-    const { nome, email, senha, areaPrincipal, tempoExperiencia, comprovacaoDidatica } = req.body;
+  try {
+    const { nome, email, senha } = req.body;
 
-    if (!nome || !email || !senha || !areaPrincipal || !tempoExperiencia || !comprovacaoDidatica) {
-        return res.status(400).json({ message: 'Todos os campos são obrigatórios.' });
+    if (!nome || !email || !senha) {
+      return res
+        .status(400)
+        .json({ message: 'Nome, email e senha são obrigatórios.' });
     }
 
-    try {
-        const [existing] = await db.query('SELECT id FROM usuarios WHERE email = ?', [email]);
-        if (existing.length > 0) {
-            return res.status(409).json({ message: 'Este email já está cadastrado.' });
-        }
-
-        const senhaHash = await bcrypt.hash(senha, SALT_ROUNDS);
-
-        const insertQuery = `
-            INSERT INTO usuarios (
-                nome, email, senha_hash, tipo_usuario,
-                area_principal, tempo_experiencia, comprovacao_didatica, status
-            )
-            VALUES (?, ?, ?, 'professor', ?, ?, ?, 'pendente')
-        `;
-        
-        await db.query(insertQuery, [
-            nome,
-            email,
-            senhaHash,
-            areaPrincipal,
-            tempoExperiencia,
-            comprovacaoDidatica
-        ]);
-
-        // Envia e-mail de confirmação ao professor
-        await sendEmail(
-            email,
-            'Pré-cadastro de Professor - LearnOn',
-            `
-            <h2>Olá, ${nome}!</h2>
-            <p>Seu pré-cadastro como <strong>professor</strong> foi recebido com sucesso.</p>
-            <p>Nossa equipe revisará suas informações e entrará em contato em breve.</p>
-            <p>Atenciosamente,<br>Equipe LearnOn</p>
-            `
-        );
-
-        // (Opcional) Envia notificação interna para o admin
-        if (process.env.ADMIN_EMAIL) {
-            await sendEmail(
-                process.env.ADMIN_EMAIL,
-                '📩 Novo Pré-cadastro de Professor',
-                `
-                <h3>Novo pré-cadastro recebido:</h3>
-                <ul>
-                    <li><strong>Nome:</strong> ${nome}</li>
-                    <li><strong>Email:</strong> ${email}</li>
-                    <li><strong>Área Principal:</strong> ${areaPrincipal}</li>
-                    <li><strong>Tempo de Experiência:</strong> ${tempoExperiencia}</li>
-                    <li><strong>Comprovação Didática:</strong> ${comprovacaoDidatica}</li>
-                </ul>
-                `
-            );
-        }
-
-        res.status(201).json({ message: 'Pré-cadastro de professor efetuado com sucesso! Aguarde a aprovação da equipe.' });
-
-    } catch (error) {
-        console.error('Erro no registro de professor:', error.message);
-        res.status(500).json({ message: 'Erro interno no servidor.' });
+    const existing = await findUserByEmail(email);
+    if (existing) {
+      return res.status(409).json({ message: 'Email já cadastrado.' });
     }
+
+    const hashed = await bcrypt.hash(senha, 10);
+    const tipo = 'professor';
+    const status = 'pendente';
+
+    const [result] = await pool.query(
+      'INSERT INTO users (nome, email, senha_hash, tipo_usuario, status) VALUES (?, ?, ?, ?, ?)',
+      [nome, email, hashed, tipo, status],
+    );
+
+    return res.status(201).json({
+      message:
+        'Cadastro de professor realizado. Aguarde aprovação do administrador.',
+      userId: result.insertId,
+    });
+  } catch (err) {
+    console.error('Erro em /api/auth/register-professor:', err);
+    return res.status(500).json({ message: 'Erro no servidor.' });
+  }
 });
 
-// ------------------------------------
-// 🔓 Login
-// ------------------------------------
+// Login
 app.post('/api/auth/login', async (req, res) => {
+  try {
     const { email, senha } = req.body;
-    if (!email || !senha)
-        return res.status(400).json({ message: 'Email e senha são obrigatórios.' });
 
-    try {
-        const [rows] = await db.query(`
-            SELECT id, nome, senha_hash, tipo_usuario, status
-            FROM usuarios WHERE email = ?
-        `, [email]);
-
-        const user = rows[0];
-        if (!user) return res.status(401).json({ message: 'Credenciais inválidas.' });
-
-        if (user.tipo_usuario === 'professor' && user.status !== 'aprovado') {
-            return res.status(403).json({ message: 'Sua conta ainda não foi aprovada pela equipe.' });
-        }
-
-        const isMatch = await bcrypt.compare(senha, user.senha_hash);
-        if (!isMatch) return res.status(401).json({ message: 'Credenciais inválidas.' });
-
-        const token = jwt.sign(
-            { userId: user.id, email: user.email, type: user.tipo_usuario },
-            process.env.JWT_SECRET,
-            { expiresIn: '1h' }
-        );
-
-        res.status(200).json({
-            message: 'Login bem-sucedido!',
-            token,
-            user: { id: user.id, nome: user.nome, tipo: user.tipo_usuario },
-        });
-
-    } catch (error) {
-        console.error('Erro no login:', error.message);
-        res.status(500).json({ message: 'Erro interno no servidor.' });
+    if (!email || !senha) {
+      return res
+        .status(400)
+        .json({ message: 'Email e senha são obrigatórios.' });
     }
+
+    const user = await findUserByEmail(email);
+    if (!user) {
+      return res
+        .status(401)
+        .json({ message: 'Credenciais inválidas.' });
+    }
+    if (!user.senha_hash) {
+      console.error('Usuário encontrado, mas coluna senha_hash está vazia ou inexistente para o email:', email);
+      return res.status(500).json({ message: 'Erro nos dados de autenticação do usuário.' });
+    }
+
+    const senhaOk = await bcrypt.compare(senha, user.senha_hash);
+    if (!senhaOk) {
+      return res
+        .status(401)
+        .json({ message: 'Credenciais inválidas.' });
+    }
+
+    // Fluxo de conta pendente (usado no front para mostrar mensagem 403)
+    if (user.status === 'pendente') {
+      return res
+        .status(403)
+        .json({ message: 'Sua conta está aguardando aprovação.' });
+    }
+
+    const token = generateJwt(user);
+
+    // O front espera: { token, user: { nome, tipo, ... } }
+    return res.json({
+      token,
+      user: {
+        id: user.id,
+        nome: user.nome,
+        tipo: user.tipo,
+      },
+    });
+  } catch (err) {
+    console.error('Erro em /api/auth/login:', err);
+    return res.status(500).json({ message: 'Erro no servidor.' });
+  }
 });
 
-// ------------------------------------
-// 🔄 Esqueci a senha
-// ------------------------------------
+// ======================
+// Esqueci / Reset Senha
+// ======================
+
+// Esqueci a senha – gera token de reset (aqui só loga no console)
 app.post('/api/auth/forgot-password', async (req, res) => {
+  try {
     const { email } = req.body;
 
-    try {
-        const [rows] = await db.query('SELECT id FROM usuarios WHERE email = ?', [email]);
-        const user = rows[0];
-
-        if (!user) {
-            return res.status(200).json({ message: 'Se o e-mail estiver cadastrado, você receberá um link.' });
-        }
-
-        const resetToken = crypto.randomBytes(32).toString('hex');
-        const expires = new Date(Date.now() + 3600000); // 1 hora
-
-        await db.query(
-            'UPDATE usuarios SET reset_token = ?, reset_token_expires = ? WHERE id = ?',
-            [resetToken, expires, user.id]
-        );
-
-        const resetUrl = `${process.env.FRONTEND_URL}/redefinir-senha/${resetToken}`;
-        const htmlContent = `
-            <p>Você solicitou a redefinição de senha.</p>
-            <p>Clique neste link para redefinir sua senha: <a href="${resetUrl}">${resetUrl}</a></p>
-            <p>O link expirará em 1 hora.</p>
-        `;
-
-        await sendEmail(email, 'LearnOn - Redefinição de Senha', htmlContent);
-        res.status(200).json({ message: 'Email de redefinição de senha enviado.' });
-
-    } catch (error) {
-        console.error('Erro ao solicitar redefinição de senha:', error.message);
-        res.status(500).json({ message: 'Erro ao processar a solicitação. Tente novamente.' });
+    if (!email) {
+      return res
+        .status(400)
+        .json({ message: 'Email é obrigatório.' });
     }
+
+    const user = await findUserByEmail(email);
+    if (!user) {
+      // Não revela se o email existe ou não (como o front já sugere)
+      return res.json({
+        message:
+          'Se o e-mail estiver cadastrado, você receberá um link de redefinição.',
+      });
+    }
+
+    const token = crypto.randomBytes(32).toString('hex');
+    const expHours = Number(process.env.RESET_TOKEN_EXP_HOURS || 1);
+    const expiresAt = new Date(Date.now() + expHours * 60 * 60 * 1000);
+
+    await pool.query(
+      'INSERT INTO password_resets (user_id, token, expires_at) VALUES (?, ?, ?)',
+      [user.id, token, expiresAt],
+    );
+
+    // Aqui você enviaria um e-mail com o link tipo:
+    // https://seu-front/reset-password/{token}
+    console.log(
+      `Token de reset para ${email}: ${token} (use na rota de reset do front)`,
+    );
+
+    return res.json({
+      message:
+        'Se o e-mail estiver cadastrado, você receberá um link de redefinição.',
+    });
+  } catch (err) {
+    console.error('Erro em /api/auth/forgot-password:', err);
+    return res.status(500).json({ message: 'Erro no servidor.' });
+  }
 });
 
-// ------------------------------------
-// 🔄 Resetar senha
-// ------------------------------------
+// Reset de senha
 app.post('/api/auth/reset-password', async (req, res) => {
+  try {
     const { token, novaSenha } = req.body;
-    if (!token || !novaSenha)
-        return res.status(400).json({ message: 'Token e nova senha são obrigatórios.' });
 
-    try {
-        const [rows] = await db.query(
-            `SELECT id FROM usuarios WHERE reset_token = ? AND reset_token_expires > NOW()`,
-            [token]
-        );
-        const user = rows[0];
-        if (!user) return res.status(400).json({ message: 'Token inválido ou expirado.' });
-
-        const novaSenhaHash = await bcrypt.hash(novaSenha, SALT_ROUNDS);
-        await db.query(
-            `UPDATE usuarios SET senha_hash = ?, reset_token = NULL, reset_token_expires = NULL WHERE id = ?`,
-            [novaSenhaHash, user.id]
-        );
-
-        res.status(200).json({ message: 'Senha redefinida com sucesso.' });
-    } catch (error) {
-        console.error('Erro ao redefinir senha:', error.message);
-        res.status(500).json({ message: 'Erro interno no servidor.' });
+    if (!token || !novaSenha) {
+      return res.status(400).json({
+        message: 'Token e nova senha são obrigatórios.',
+      });
     }
+
+    const [rows] = await pool.query(
+      'SELECT * FROM password_resets WHERE token = ?',
+      [token],
+    );
+    const reset = rows[0];
+
+    if (!reset) {
+      return res
+        .status(400)
+        .json({ message: 'Token inválido.' });
+    }
+
+    const now = new Date();
+    if (new Date(reset.expires_at) < now) {
+      return res
+        .status(400)
+        .json({ message: 'Token expirado.' });
+    }
+
+    const hashed = await bcrypt.hash(novaSenha, 10);
+
+    await pool.query('UPDATE users SET senha_hash = ? WHERE id = ?', [
+      hashed,
+      reset.user_id,
+    ]);
+    await pool.query(
+      'UPDATE password_resets SET used_at = ? WHERE id = ?',
+      [now, reset.id],
+    );
+
+    return res.json({
+      message: 'Senha redefinida com sucesso!',
+    });
+  } catch (err) {
+    console.error('Erro em /api/auth/reset-password:', err);
+    return res.status(500).json({ message: 'Erro no servidor.' });
+  }
 });
 
-// ------------------------------------
-// 🚀 INICIAR SERVIDOR
-// ------------------------------------
-app.listen(PORT, () => {
-    console.log(`✅ Servidor rodando na porta ${PORT}`);
-    console.log(`🌐 CORS habilitado para: https://learnon.vercel.app`);
+// =============
+// Pedidos
+// =============
+
+// Criar pedido
+app.post('/api/pedidos/criar', async (req, res) => {
+  try {
+    const { duvida, solicitante_email } = req.body;
+
+    if (!duvida) {
+      return res
+        .status(400)
+        .json({ message: 'O campo "duvida" é obrigatório.' });
+    }
+
+    const [result] = await pool.query(
+      'INSERT INTO pedidos (duvida, solicitante_email, status) VALUES (?, ?, ?)',
+      [duvida, solicitante_email || null, 'pendente'],
+    );
+
+    return res.status(201).json({
+      id: result.insertId,
+      message: 'Pedido criado com sucesso.',
+    });
+  } catch (err) {
+    console.error('Erro em /api/pedidos/criar:', err);
+    return res.status(500).json({ message: 'Erro no servidor.' });
+  }
+});
+
+// Listar pedidos pendentes (para o dashboard do professor)
+app.get('/api/pedidos/pendentes', async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT id,
+              duvida,
+              solicitante_email,
+              created_at AS data_pedido
+       FROM pedidos
+       WHERE status = 'pendente'
+       ORDER BY created_at DESC`,
+    );
+
+    return res.json(rows);
+  } catch (err) {
+    console.error('Erro em /api/pedidos/pendentes:', err);
+    return res.status(500).json({ message: 'Erro no servidor.' });
+  }
+});
+
+// ==========================
+// Inicialização do servidor
+// ==========================
+
+const port = process.env.PORT || 3000;
+app.listen(port, () => {
+  console.log(`Servidor rodando em http://localhost:${port}`);
 });
